@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+
+# gitcheck — show git sync status for all repos inside a folder
+# Usage: gitcheck [folder]   (defaults to current directory)
+
+ROOT="${1:-.}"
+ROOT="$(realpath "$ROOT")"
+
+# Colors
+RED='\033[0;31m'; YELLOW='\033[0;33m'; GREEN='\033[0;32m'
+CYAN='\033[0;36m'; GRAY='\033[0;90m'; BOLD='\033[1m'; RESET='\033[0m'
+
+if [ ! -d "$ROOT" ]; then
+  echo -e "${RED}Error: '$ROOT' is not a directory.${RESET}"
+  exit 1
+fi
+
+echo -e "\n${BOLD}Checking repos inside: ${CYAN}$ROOT${RESET}\n"
+printf "%-40s %-15s %s\n" "Project" "Branch" "Status"
+printf '%0.s─' {1..70}; echo
+
+found=0
+
+# Find all git repos (any depth) inside ROOT
+while IFS= read -r gitdir; do
+  repo="$(dirname "$gitdir")"
+  name="${repo#"$ROOT/"}"   # relative path from ROOT
+  found=1
+
+  # Get current branch
+  branch=$(git -C "$repo" symbolic-ref --short HEAD 2>/dev/null || echo "detached")
+
+  # Fetch quietly (skip if no network / no remote)
+  git -C "$repo" fetch --quiet 2>/dev/null
+
+  remote=$(git -C "$repo" remote 2>/dev/null | head -1)
+
+  if [ -z "$remote" ]; then
+    printf "%-40s %-15s " "$name" "$branch"
+    echo -e "${GRAY}no remote configured${RESET}"
+    continue
+  fi
+
+  remote_branch="$remote/$branch"
+  exists=$(git -C "$repo" rev-parse --verify "refs/remotes/$remote_branch" 2>/dev/null)
+
+  if [ -z "$exists" ]; then
+    printf "%-40s %-15s " "$name" "$branch"
+    echo -e "${YELLOW}remote branch not found (never pushed?)${RESET}"
+    continue
+  fi
+
+  ahead=$(git -C "$repo" rev-list --count "$remote_branch..HEAD" 2>/dev/null)
+  behind=$(git -C "$repo" rev-list --count "HEAD..$remote_branch" 2>/dev/null)
+
+  # Uncommitted local changes
+  dirty=$(git -C "$repo" status --porcelain 2>/dev/null)
+
+  printf "%-40s %-15s " "$name" "$branch"
+
+  if [ "$ahead" -eq 0 ] && [ "$behind" -eq 0 ] && [ -z "$dirty" ]; then
+    echo -e "${GREEN}✓ up to date${RESET}"
+  else
+    parts=()
+    [ "$ahead"  -gt 0 ] && parts+=("${YELLOW}↑ $ahead to push${RESET}")
+    [ "$behind" -gt 0 ] && parts+=("${RED}↓ $behind to pull${RESET}")
+    [ -n "$dirty"      ] && parts+=("${CYAN}~ uncommitted changes${RESET}")
+    echo -e "$(IFS='  '; echo "${parts[*]}")"
+  fi
+
+done < <(find "$ROOT" -name ".git" -type d -not -path "*/.git/*")
+
+if [ "$found" -eq 0 ]; then
+  echo -e "${GRAY}No git repositories found inside $ROOT${RESET}"
+fi
+
+echo
